@@ -1,0 +1,26 @@
+{
+  "manifest_version": "0.3",
+  "name": "costwright-mcp",
+  "version": "0.1.1",
+  "description": "Static worst-case token-budget analysis for LLM-agent workflows + signed budget certificates.",
+  "author": { "name": "eleata", "url": "https://eleata.io" },
+  "homepage": "https://eleata.io",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": { "COSTWRIGHT_API_KEY": "${user_config.api_key}" }
+    }
+  },
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "costwright API Key",
+      "description": "RapidAPI key (only needed for check/certify; verify/pubkey are public)",
+      "sensitive": true,
+      "required": false
+    }
+  }
+}
