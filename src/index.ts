@@ -22,7 +22,7 @@
  * `Authorization: Bearer` against the direct/Paddle channel instead.
  * verify/pubkey are public (no key).
  */
-import { readdirSync, statSync, readFileSync } from "node:fs";
+import { readdirSync, lstatSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { gzipSync } from "node:zlib";
 
@@ -38,10 +38,15 @@ const TIMEOUT_MS = 45_000; // analysis can take up to ~30s
 const EXCLUDE_DIRS = new Set([".venv", "venv", "node_modules", "site-packages", ".git", "__pycache__", "tests", "docs", "build", "dist", ".mypy_cache", ".pytest_cache"]);
 const MAX_FILES = 6000;
 const MAX_TOTAL_BYTES = 60_000_000;
+const MAX_FILE_BYTES = 10_000_000; // per-file cap, checked before reading
 
 // ---- minimal tar (ustar) + gzip, .py files only ---------------------------
+// Skips symlinks (anti-escape + anti-cycle), enforces size/count caps from the
+// stat (before reading), and rejects paths that don't fit a plain ustar header
+// (>100 bytes) rather than truncating them silently.
 function collectPyFiles(root: string): { path: string; rel: string }[] {
   const out: { path: string; rel: string }[] = [];
+  let total = 0;
   const walk = (dir: string) => {
     let entries: string[];
     try {
@@ -54,13 +59,22 @@ function collectPyFiles(root: string): { path: string; rel: string }[] {
       const full = join(dir, name);
       let st;
       try {
-        st = statSync(full);
+        st = lstatSync(full); // lstat: do NOT follow symlinks
       } catch {
         continue;
       }
-      if (st.isDirectory()) walk(full);
-      else if (st.isFile() && name.endsWith(".py")) out.push({ path: full, rel: relative(root, full).split(sep).join("/") });
-      if (out.length > MAX_FILES) return;
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
+        walk(full);
+      } else if (st.isFile() && name.endsWith(".py")) {
+        if (out.length >= MAX_FILES) throw new Error(`too many .py files (limit ${MAX_FILES})`);
+        if (st.size > MAX_FILE_BYTES) throw new Error(`file too large: ${name} (${st.size} bytes; per-file max ${MAX_FILE_BYTES})`);
+        total += st.size;
+        if (total > MAX_TOTAL_BYTES) throw new Error(`repo too large (over ${MAX_TOTAL_BYTES} bytes of .py source)`);
+        const rel = relative(root, full).split(sep).join("/");
+        if (Buffer.byteLength(rel, "utf8") > 100) throw new Error(`path too long for the archive (>100 bytes): ${rel}`);
+        out.push({ path: full, rel });
+      }
     }
   };
   walk(root);
@@ -124,6 +138,14 @@ async function httpGet(path: string): Promise<{ status: number; text: string } |
   }
 }
 
+// Format a public GET result without dumping the raw upstream body on error.
+function fmtGet(r: { status: number; text: string } | { error: string }, notFound: string): string {
+  if ("error" in r) return r.error;
+  if (r.status >= 200 && r.status < 300) return r.text;
+  if (r.status === 404) return notFound;
+  return `costwright returned HTTP ${r.status}.`;
+}
+
 async function postArtifact(path: string, root: string, policy: string, label?: string): Promise<string> {
   if (!API_KEY) {
     return "No API key configured. Set COSTWRIGHT_API_KEY. Get one from the costwright RapidAPI listing or the direct channel (https://eleata.io).";
@@ -148,14 +170,17 @@ async function postArtifact(path: string, root: string, policy: string, label?: 
     return `Could not reach costwright at ${API_BASE}.`;
   }
   const text = await res.text();
+  // Status-specific messages BEFORE attempting JSON (a gateway may return HTML).
+  if (res.status === 401 || res.status === 403) return "Authentication failed: COSTWRIGHT_API_KEY missing, invalid, or wrong channel.";
+  if (res.status === 413) return "The repo archive is too large for costwright (server size limit exceeded).";
+  if (res.status === 429) return "costwright is rate-limited or at capacity. Try again shortly.";
+  if (res.status === 503) return "costwright is temporarily unavailable. Try again shortly.";
   let data: any;
   try {
     data = JSON.parse(text);
   } catch {
     return `costwright returned a non-JSON response (HTTP ${res.status}).`;
   }
-  if (res.status === 401 || res.status === 403) return "Authentication failed: COSTWRIGHT_API_KEY missing, invalid, or wrong channel.";
-  if (res.status === 429) return "costwright is rate-limited or at capacity. Try again shortly.";
   if (res.status < 200 || res.status >= 300) {
     const msg = data?.error?.message || data?.detail || data?.message || `HTTP ${res.status}`;
     return `costwright request failed: ${String(msg).slice(0, 300)}`;
@@ -175,7 +200,7 @@ const TOOLS = [
       type: "object",
       additionalProperties: false,
       properties: {
-        repo_path: { type: "string", description: "Absolute path to the local Python repo/directory to analyze." },
+        repo_path: { type: "string", description: "Absolute path to the local Python repo/directory to analyze.", maxLength: 4096 },
         policy: { type: "string", enum: ["default", "strict"], default: "default", description: "Analysis policy." },
       },
       required: ["repo_path"],
@@ -191,9 +216,9 @@ const TOOLS = [
       type: "object",
       additionalProperties: false,
       properties: {
-        repo_path: { type: "string", description: "Absolute path to the local Python repo/directory to certify." },
+        repo_path: { type: "string", description: "Absolute path to the local Python repo/directory to certify.", maxLength: 4096 },
         policy: { type: "string", enum: ["default", "strict"], default: "default" },
-        label: { type: "string", description: "Optional human label for the certificate." },
+        label: { type: "string", description: "Optional human label for the certificate.", maxLength: 256 },
       },
       required: ["repo_path"],
     },
@@ -204,7 +229,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      properties: { cert_id: { type: "string", description: "The certificate id to verify." } },
+      properties: { cert_id: { type: "string", description: "The certificate id to verify.", maxLength: 256 } },
       required: ["cert_id"],
     },
   },
@@ -228,14 +253,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       text = await postArtifact("/v1/certificates", String(args.repo_path ?? ""), String(args.policy ?? "default"), args.label ? String(args.label) : undefined);
     } else if (name === "costwright_verify") {
       const id = String(args.cert_id ?? "");
-      if (!id) text = "cert_id is required.";
-      else {
-        const r = await httpGet(`/v1/verify/${encodeURIComponent(id)}`);
-        text = "error" in r ? r.error : r.status >= 200 && r.status < 300 ? r.text : `HTTP ${r.status}: ${r.text.slice(0, 200)}`;
-      }
+      text = id ? fmtGet(await httpGet(`/v1/verify/${encodeURIComponent(id)}`), "Not found (no such certificate id).") : "cert_id is required.";
     } else if (name === "costwright_pubkey") {
-      const r = await httpGet("/v1/pubkey");
-      text = "error" in r ? r.error : r.status >= 200 && r.status < 300 ? r.text : `HTTP ${r.status}: ${r.text.slice(0, 200)}`;
+      text = fmtGet(await httpGet("/v1/pubkey"), "Not found.");
     } else {
       return { isError: true, content: [{ type: "text", text: `Unknown tool: ${name}` }] };
     }

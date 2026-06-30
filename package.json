@@ -1,7 +1,7 @@
 {
   "name": "costwright-mcp",
   "mcpName": "io.github.hernaninverso/costwright-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server: static worst-case token-budget analysis for LLM-agent workflows (LangGraph/CrewAI/OpenAI-Agents) + signed budget certificates.",
   "type": "module",
   "bin": { "costwright-mcp": "dist/index.js" },
