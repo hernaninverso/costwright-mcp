@@ -1,0 +1,17 @@
+# https://smithery.ai/docs/config#smitheryyaml
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      costwrightApiKey:
+        type: string
+        description: API key for costwright (only needed for check/certify; verify/pubkey are public). Injected as COSTWRIGHT_API_KEY.
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', 'costwright-mcp'],
+      env: config.costwrightApiKey ? { COSTWRIGHT_API_KEY: config.costwrightApiKey } : {}
+    })
+  exampleConfig:
+    costwrightApiKey: your_costwright_api_key

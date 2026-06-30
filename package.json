@@ -1,0 +1,18 @@
+{
+  "name": "costwright-mcp",
+  "mcpName": "io.github.hernaninverso/costwright-mcp",
+  "version": "0.1.0",
+  "description": "MCP server: static worst-case token-budget analysis for LLM-agent workflows (LangGraph/CrewAI/OpenAI-Agents) + signed budget certificates.",
+  "type": "module",
+  "bin": { "costwright-mcp": "dist/index.js" },
+  "files": ["dist", "README.md"],
+  "scripts": { "build": "tsc", "prepublishOnly": "npm run build" },
+  "keywords": ["mcp", "model-context-protocol", "llm-agents", "langgraph", "crewai", "token-budget", "cost", "static-analysis", "ai-safety", "certificate"],
+  "license": "MIT",
+  "author": "eleata",
+  "homepage": "https://eleata.io",
+  "repository": { "type": "git", "url": "https://github.com/hernaninverso/costwright-mcp.git" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "@modelcontextprotocol/sdk": "^1.12.0" },
+  "devDependencies": { "typescript": "^5.6.0", "@types/node": "^22.0.0" }
+}
